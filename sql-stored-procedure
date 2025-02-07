@@ -1,0 +1,275 @@
+CREATE OR REPLACE PROCEDURE *.*(base_year int, out_year int)
+AS '
+
+BEGIN
+
+-- TITLE: Update IOM Data for Integrated Opportunity Management Project
+-- AUTHOR: David Treichler, Ernest Dakin 
+-- DATE:  2022-06-01
+
+-- NOTES
+-- 2022-06-01 Initial Table Created	ERD
+
+DROP TABLE IF EXISTS #iom_dev_updates;
+
+CREATE TABLE #iom_dev_updates
+(
+unique_id varchar(115),
+aac_code char(6),
+funding_aac_code char(6),
+extent_competed varchar(3),
+aac_name varchar(100),
+unique_award_id varchar(50),  
+naicscode varchar(6),  
+current_mod varchar(25),
+piid varchar(50),  
+reference_piid varchar(50),  
+transaction_number bigint,  
+contract_category varchar(55),
+contract_category_code varchar(1),
+gwcmlevel1 text,
+current_expiration_date timestamp,  
+psc_in_scope varchar(1),
+modification_number varchar(25),
+calc_extent_competed varchar(100), 
+calc_mod_number_flag char(1),  
+calc_expiration_date_flag char(1),
+calc_transaction_number_flag char(1),
+calc_sum_total_$_flag char(1),
+calc_fas_addressable char(1), 
+calc_gwcmlevel1_common_flag char(1),
+calc_current_expiration_fiscalyear integer,
+calc_fiscalyeartoday integer,
+calc_exp_date_current_FY_using_award_id timestamp null,
+dollars_obligated numeric(38,12)
+)
+;
+
+insert into #iom_dev_updates 
+select '' '', aac_code, funding_aac_code,
+extent_competed, aac_name, unique_award_id, naicscode, current_mod, piid, 
+       reference_piid, transaction_number, contract_category, contract_category_code, 
+       gwcmlevel1, current_expiration_date, psc_in_scope, modification_number, '' '', 
+       ''F'', ''F'', ''F'', ''F'', ''T'', ''F'', 0, 0, null, sum(dollars_obligated) 
+from *.*.* 
+WHERE (
+        (CASE WHEN date_part(month, current_expiration_date) > 9 THEN date_part(year, current_expiration_date) + 1 ELSE date_part(year, current_expiration_date) END) = 
+        (base_year) OR
+        (CASE WHEN date_part(month, current_expiration_date) > 9 THEN date_part(year, current_expiration_date) + 1 ELSE date_part(year, current_expiration_date) END) = 
+        (out_year)
+      )
+      AND
+      (contract_category_code in (''1'',''2'',''3'',''4'',''5'',''7'',''B''))
+group by aac_code, funding_aac_code, extent_competed, aac_name, unique_award_id, naicscode, current_mod, piid, 
+       reference_piid, total_obligated, transaction_number,  
+       contract_category, contract_category_code, gwcmlevel1, current_expiration_date, psc_in_scope, 
+       modification_number;
+
+-- unique_id
+update #iom_dev_updates
+set unique_id = piid || reference_piid || aac_code || funding_aac_code
+from #iom_dev_updates
+where 1=1;
+
+update #iom_dev_updates
+set calc_extent_competed = CASE WHEN extent_competed = ''A'' THEN ''A - Full and Open Competition''
+  WHEN extent_competed = ''B'' THEN ''B - Not Available for Competition''
+  WHEN extent_competed = ''C'' THEN ''C - Not Competed''
+  WHEN extent_competed = ''CDO'' THEN ''CDO - Competitive Delivery Order''
+  WHEN extent_competed = ''D'' THEN ''D - Full and Open Competition after exclusion of Sources''
+  WHEN extent_competed = ''E'' THEN ''E - Follow-On to Competed Action''
+  WHEN extent_competed = ''F'' THEN ''F - Competed under SAP''
+  WHEN extent_competed = ''G'' THEN ''G - Not Competed under SAP''
+  WHEN extent_competed = ''NDO'' THEN ''NDO - Non-Competitive Delivery Order''
+ELSE ''Not Specified'' 
+END
+where 1=1;
+
+-- calc_transaction_number_flag
+
+drop table if exists #max_trans;
+
+create table #max_trans
+(
+piid varchar(50) null,
+reference_piid varchar(50) null,
+max_trans bigint null,
+number_of_records integer);
+
+insert into #max_trans
+select piid, reference_piid, max(transaction_number), count(*)
+from #iom_dev_updates
+group by piid, reference_piid;
+
+update #iom_dev_updates
+set calc_transaction_number_flag = ''T''
+from #iom_dev_updates a,
+     #max_trans b
+where (a.piid = b.piid) and
+      (a.reference_piid = b.reference_piid) and
+      (a.transaction_number = b.max_trans);
+
+drop table if exists #max_trans;
+
+-- calc_mod_number_flag
+
+update #iom_dev_updates
+set calc_mod_number_flag = CASE WHEN current_mod = modification_number THEN ''T'' ELSE ''F'' END
+from #iom_dev_updates
+where 1=1;
+
+
+-- calc_expiration_date_flag
+
+update #iom_dev_updates
+SET calc_expiration_date_flag = CASE 
+  WHEN current_expiration_date > GETDATE() THEN ''T'' 
+ELSE ''F''
+END 
+from #iom_dev_updates
+where 1=1;
+
+-- calc_sum_total_$_flag
+
+drop table if exists #sum_total_dollars;
+
+create table #sum_total_dollars
+(
+--piid varchar(50) null,
+--reference_piid varchar(50) null,
+unique_id varchar(115) null,
+dollars_obligated numeric(24,4) null,
+number_of_records integer);
+
+insert into #sum_total_dollars
+select unique_id, sum(dollars_obligated), count(*)
+from #iom_dev_updates
+group by unique_id;
+
+update #iom_dev_updates
+set calc_sum_total_$_flag = ''T''
+from #iom_dev_updates a,
+     #sum_total_dollars b
+where (a.unique_id = b.unique_id) and
+      (b.dollars_obligated > 10000.00);
+
+drop table if exists calc_sum_total_$_flag;
+
+
+-- calc_fas_addressable
+
+update #iom_dev_updates
+SET calc_fas_addressable = CASE 
+  WHEN contract_category_code in (''6'',''A'',''C'') THEN ''F''
+ELSE ''T''
+END
+from #iom_dev_updates
+where 1=1;
+
+-- write calc_gwcmlevel1_common_flag
+update #iom_dev_updates
+SET calc_gwcmlevel1_common_flag = CASE 
+  WHEN gwcmlevel1 in (''Facilities & Construction'',''Human Capital'',''Industrial Products & Services'',
+                      ''IT'',''Office Management'',''Professional Services'',''Security and Protection'',
+                      ''Transportation and Logistics Services'',''Travel'') 
+  THEN ''T''
+ELSE ''F''
+END
+from #iom_dev_updates
+where 1=1;
+
+
+-- calc_current_expiration_fiscalyear 
+
+update #iom_dev_updates
+SET calc_current_expiration_fiscalyear = (CASE 
+   WHEN date_part(month, current_expiration_date) > 9 
+   THEN date_part(year, current_expiration_date) + 1
+ELSE date_part(year, current_expiration_date)
+END)
+from #iom_dev_updates
+where 1=1;
+
+
+-- calc_fiscalyeartoday 
+
+update #iom_dev_updates
+SET calc_fiscalyeartoday = (base_year)
+from #iom_dev_updates
+where 1=1;
+
+--  calc_exp_date_current_FY_using_award_id
+
+
+drop table if exists #current_exp_date_by_award_id;
+
+create table #current_exp_date_by_award_id
+(
+unique_id varchar(115) null,
+exp_date timestamp null);
+
+insert into #current_exp_date_by_award_id
+select distinct unique_id
+from #iom_dev_updates
+where   (CASE WHEN date_part(month, current_expiration_date) > 9 THEN date_part(year, current_expiration_date) + 1 ELSE date_part(year, current_expiration_date) END) = 
+        (out_year)
+group by unique_id;
+
+update #current_exp_date_by_award_id
+set exp_date = (select distinct current_expiration_date
+                from #iom_dev_updates
+                where (unique_id = x.unique_id) and
+                      (calc_mod_number_flag = ''T'') and
+                      (calc_transaction_number_flag = ''T'') and
+                      (CASE WHEN date_part(month, current_expiration_date) > 9 THEN date_part(year, current_expiration_date) + 1 ELSE date_part(year, current_expiration_date) END) = 
+                      (base_year) )
+from #current_exp_date_by_award_id x
+where 1=1;
+
+-- select * from #current_exp_date_by_award_id; 
+
+update #iom_dev_updates
+set calc_exp_date_current_FY_using_award_id = b.exp_date
+from #iom_dev_updates a,
+     #current_exp_date_by_award_id b
+where (a.unique_id = b.unique_id);
+
+drop table if exists #current_exp_date_by_award_id;
+
+
+-- Cleanup
+
+DELETE FROM #iom_dev_updates
+WHERE (calc_extent_competed IN (''B - Not Available for Competition'', ''C - Not Competed'', ''G - Not Competed under SAP''))
+   OR (calc_mod_number_flag != ''T'') 
+   OR (calc_expiration_date_flag != ''T'') 
+   OR (calc_current_expiration_fiscalyear != calc_fiscalyeartoday AND calc_current_expiration_fiscalyear != calc_fiscalyeartoday + 1) 
+   OR (calc_transaction_number_flag != ''T'') 
+   OR (calc_sum_total_$_flag = ''F'') 
+   OR (calc_fas_addressable != ''T'')
+   OR (calc_gwcmlevel1_common_flag != ''T'')
+   OR (psc_in_scope != ''T'')
+   OR (LEFT(naicscode, 3) = ''236'') -- exclude 236xxx construction-related NAICS   
+   OR (LEFT(naicscode, 3) = ''237'') -- exclude 237xxx construction-related NAICS
+   OR (aac_name LIKE ''%AAS%'')  -- if aac/name has ‘AAS’ exclude
+;
+
+delete from #iom_dev_updates where unique_id in (select unique_id from *.*);
+
+insert into *.*
+select *
+from #iom_dev_updates
+;
+
+unload ('' select * from *.*  '') 
+to ''s3://*/*/*/*/*.txt'' 
+credentials ''*'' 
+delimiter as '',''
+parallel off
+ALLOWOVERWRITE
+ADDQUOTES
+HEADER;
+
+END; 
+'
+LANGUAGE plpgsql;
